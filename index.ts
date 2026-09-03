@@ -104,6 +104,18 @@ async function setAllOpenRouterFlex(enabled: boolean): Promise<number> {
     for (const id of ids) {
       const override = overrides[id] ?? {};
       override.samplingParams = { ...(override.samplingParams ?? {}), service_tier: "flex" };
+      // Gemini encrypted reasoning signatures are tied to the upstream route.
+      // Keep Gemini 3.8 on one Flex provider instead of alternating between
+      // Google AI Studio and Vertex across turns.
+      if (id === "google/gemini-3.8-flash") {
+        override.compat = {
+          ...(override.compat ?? {}),
+          openRouterRouting: {
+            ...(override.compat?.openRouterRouting ?? {}),
+            only: ["google-ai-studio/flex"],
+          },
+        };
+      }
       overrides[id] = override;
     }
   } else {
@@ -111,6 +123,12 @@ async function setAllOpenRouterFlex(enabled: boolean): Promise<number> {
       if (!override?.samplingParams) continue;
       delete override.samplingParams.service_tier;
       if (!Object.keys(override.samplingParams).length) delete override.samplingParams;
+      if (override.compat?.openRouterRouting?.only?.length === 1
+        && override.compat.openRouterRouting.only[0] === "google-ai-studio/flex") {
+        delete override.compat.openRouterRouting.only;
+        if (!Object.keys(override.compat.openRouterRouting).length) delete override.compat.openRouterRouting;
+        if (!Object.keys(override.compat).length) delete override.compat;
+      }
     }
   }
 
@@ -143,8 +161,13 @@ function stripOpenRouterReasoningSignatures(payload: unknown): unknown {
   };
 }
 
-function hasInvalidThoughtSignature(messages: any[]): boolean {
-  return messages.some((message) => {
+function hasInvalidThoughtSignature(messages: any[], entries: any[] = []): boolean {
+  const lastPersisted = entries.at(-1)?.message;
+  const candidates = [
+    ...messages,
+    ...(lastPersisted ? [lastPersisted] : []),
+  ];
+  return candidates.some((message) => {
     if (!message || message.role !== "assistant") return false;
     const text = [message.errorMessage, message.content, message.message]
       .filter((value) => typeof value === "string")
@@ -195,7 +218,8 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
   let busy = false;
   let timer: ReturnType<typeof setInterval> | null = null;
   let recoveryPending = false;
-  let recoveryInProgress = false;
+  let recoveryAttempts = 0;
+  const MAX_RECOVERY_ATTEMPTS = 3;
 
   function isOpenRouter(ctx: any): boolean {
     return ctx?.model?.provider === PROVIDER;
@@ -365,7 +389,7 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
     // the synthetic follow-up sent by this extension.
     if (event?.source !== "extension") {
       recoveryPending = false;
-      recoveryInProgress = false;
+      recoveryAttempts = 0;
     }
   });
 
@@ -376,10 +400,18 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
     void refresh(ctx);
 
     const messages = Array.isArray(event?.messages) ? event.messages : [];
-    if (isOpenRouter(ctx) && !recoveryInProgress && hasInvalidThoughtSignature(messages)) {
-      recoveryInProgress = true;
+    const entries = ctx.sessionManager?.getEntries?.() || [];
+    if (
+      isOpenRouter(ctx)
+      && recoveryAttempts < MAX_RECOVERY_ATTEMPTS
+      && hasInvalidThoughtSignature(messages, entries)
+    ) {
+      recoveryAttempts += 1;
       recoveryPending = true;
-      ctx.ui.notify("OpenRouter thought signature expired; retrying from a clean reasoning context...", "warning");
+      ctx.ui.notify(
+        `OpenRouter thought signature expired; automatic recovery ${recoveryAttempts}/${MAX_RECOVERY_ATTEMPTS}...`,
+        "warning",
+      );
       setTimeout(() => {
         pi.sendUserMessage(
           "Continue from the last valid state. Do not repeat completed work; retry the interrupted operation.",
