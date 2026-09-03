@@ -340,12 +340,24 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
   pi.registerCommand("openrouter-flex", {
     description: "Enable or disable OpenRouter Flex routing for all catalog models",
     handler: async (args, ctx) => {
-      const mode = String(args || "on").trim().toLowerCase();
+      let mode = String(args || "").trim().toLowerCase();
       try {
+        if (!mode) {
+          const enabled = countFlexOverrides() > 0;
+          const choice = await ctx.ui.select(
+            `OpenRouter Flex (${enabled ? "enabled" : "disabled"})`,
+            ["Enable Flex", "Disable Flex", "Cancel"],
+          );
+          if (choice === "Enable Flex") mode = "on";
+          else if (choice === "Disable Flex") mode = "off";
+          else return;
+        }
         if (mode === "status") {
           ctx.ui.notify(`OpenRouter Flex overrides: ${countFlexOverrides()} (models.json)`, "info");
           return;
         }
+        if (mode === "enable") mode = "on";
+        if (mode === "disable") mode = "off";
         if (mode !== "on" && mode !== "off") {
           ctx.ui.notify("Usage: /openrouter-flex [on|off|status]", "warning");
           return;

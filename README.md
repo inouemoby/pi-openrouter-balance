@@ -30,7 +30,7 @@ The extension reads the key from Pi's standard `auth.json` provider entry or the
 
 - Footer balance display, only when the active provider is `openrouter`;
 - `/openrouter` detailed balance and usage command;
-- `/openrouter-flex [on|off|status]` dynamically applies or removes `service_tier: "flex"` for all current OpenRouter catalog models;
+- `/openrouter-flex` opens an enable/disable submenu; `/openrouter-flex on|off|status` executes directly without opening the submenu; it dynamically applies or removes `service_tier: "flex"` for all current OpenRouter catalog models;
 - `openrouter_balance` tool for agent-accessible balance checks;
 - automatic refresh after each agent turn and every five minutes while idle;
 - standard root `index.ts` extension entry, with no build directory required.
