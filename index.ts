@@ -124,6 +124,35 @@ function countFlexOverrides(): number {
   return Object.values(overrides).filter((override: any) => override?.samplingParams?.service_tier === "flex").length;
 }
 
+function stripOpenRouterReasoningSignatures(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || !Array.isArray((payload as any).messages)) return payload;
+  return {
+    ...(payload as Record<string, unknown>),
+    messages: (payload as any).messages.map((message: any) => {
+      if (!message || message.role !== "assistant") return message;
+      const clean = { ...message };
+      // These fields can contain encrypted/provider-specific reasoning from a
+      // previous route. Keep visible text and tool calls, but force OpenRouter
+      // to start a fresh reasoning chain on the recovery request.
+      delete clean.reasoning_details;
+      delete clean.reasoning;
+      delete clean.reasoning_content;
+      delete clean.reasoning_text;
+      return clean;
+    }),
+  };
+}
+
+function hasInvalidThoughtSignature(messages: any[]): boolean {
+  return messages.some((message) => {
+    if (!message || message.role !== "assistant") return false;
+    const text = [message.errorMessage, message.content, message.message]
+      .filter((value) => typeof value === "string")
+      .join(" ");
+    return /invalid\s+(?:thought|thinking)\s+signature/i.test(text);
+  });
+}
+
 async function fetchBalance(): Promise<BalanceData> {
   const key = readApiKey();
   if (!key) throw new Error("No OpenRouter API key found. Run /login openrouter or set OPENROUTER_API_KEY.");
@@ -165,6 +194,8 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
   let latestCtx: any = null;
   let busy = false;
   let timer: ReturnType<typeof setInterval> | null = null;
+  let recoveryPending = false;
+  let recoveryInProgress = false;
 
   function isOpenRouter(ctx: any): boolean {
     return ctx?.model?.provider === PROVIDER;
@@ -323,8 +354,40 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
   });
 
   pi.on("session_shutdown", async () => stopTimer());
+  pi.on("before_provider_request", (event: any, ctx: any) => {
+    if (!recoveryPending || !isOpenRouter(ctx)) return;
+    recoveryPending = false;
+    return stripOpenRouterReasoningSignatures(event.payload);
+  });
+
+  pi.on("input", (event: any) => {
+    // A real user prompt starts a new recovery budget. Do not clear it for
+    // the synthetic follow-up sent by this extension.
+    if (event?.source !== "extension") {
+      recoveryPending = false;
+      recoveryInProgress = false;
+    }
+  });
+
   pi.on("agent_start", async (_event, ctx) => { latestCtx = ctx; busy = true; });
-  pi.on("agent_end", async (_event, ctx) => { latestCtx = ctx; busy = false; void refresh(ctx); });
+  pi.on("agent_end", async (event: any, ctx) => {
+    latestCtx = ctx;
+    busy = false;
+    void refresh(ctx);
+
+    const messages = Array.isArray(event?.messages) ? event.messages : [];
+    if (isOpenRouter(ctx) && !recoveryInProgress && hasInvalidThoughtSignature(messages)) {
+      recoveryInProgress = true;
+      recoveryPending = true;
+      ctx.ui.notify("OpenRouter thought signature expired; retrying from a clean reasoning context...", "warning");
+      setTimeout(() => {
+        pi.sendUserMessage(
+          "Continue from the last valid state. Do not repeat completed work; retry the interrupted operation.",
+          { deliverAs: "followUp" },
+        );
+      }, 0);
+    }
+  });
   pi.on("model_select", async (_event, ctx) => {
     latestCtx = ctx;
     if (isOpenRouter(ctx)) {
