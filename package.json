@@ -1,0 +1,25 @@
+{
+  "name": "pi-openrouter-balance",
+  "version": "0.1.0",
+  "description": "OpenRouter credits and balance monitor for the Pi coding agent.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": ["pi-package", "pi", "openrouter", "balance", "credits"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/inouemoby/pi-openrouter-balance.git"
+  },
+  "bugs": {
+    "url": "https://github.com/inouemoby/pi-openrouter-balance/issues"
+  },
+  "homepage": "https://github.com/inouemoby/pi-openrouter-balance",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  }
+}
