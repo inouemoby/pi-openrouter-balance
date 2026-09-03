@@ -30,6 +30,7 @@ The extension reads the key from Pi's standard `auth.json` provider entry or the
 
 - Footer balance display, only when the active provider is `openrouter`;
 - `/openrouter` detailed balance and usage command;
+- `/openrouter-flex [on|off|status]` dynamically applies or removes `service_tier: "flex"` for all current OpenRouter catalog models;
 - `openrouter_balance` tool for agent-accessible balance checks;
 - automatic refresh after each agent turn and every five minutes while idle;
 - standard root `index.ts` extension entry, with no build directory required.
@@ -46,6 +47,8 @@ The extension reads the key from Pi's standard `auth.json` provider entry or the
 ## Data source
 
 The extension reads `GET https://openrouter.ai/api/v1/credits` and uses:
+
+The Flex command reads the current OpenRouter model catalog and updates Pi's standard `~/.pi/agent/models.json` `modelOverrides`; it does not create a second provider or model catalog.
 
 ```text
 remaining = total_credits - total_usage

@@ -7,6 +7,8 @@ import * as path from "node:path";
 
 const PROVIDER = "openrouter";
 const CREDITS_URL = "https://openrouter.ai/api/v1/credits";
+const MODELS_URL = "https://openrouter.ai/api/v1/models";
+const MODELS_CONFIG_PATH = "models.json";
 const CACHE_MS = 60_000;
 const IDLE_REFRESH_MS = 5 * 60 * 1000;
 
@@ -55,6 +57,71 @@ function formatTokens(count: number): string {
   if (count < 1e6) return `${Math.round(count / 1000)}k`;
   if (count < 1e7) return `${(count / 1e6).toFixed(1)}M`;
   return `${Math.round(count / 1e6)}M`;
+}
+
+function getModelsConfigPath(): string {
+  const agentDir = process.env.PI_CODING_AGENT_DIR
+    || path.join(process.env.USERPROFILE || process.env.HOME || ".", ".pi", "agent");
+  return path.join(agentDir, MODELS_CONFIG_PATH);
+}
+
+function readModelsConfig(): Record<string, any> {
+  try {
+    const file = getModelsConfigPath();
+    return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeModelsConfig(config: Record<string, any>): void {
+  const file = getModelsConfigPath();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temporary = `${file}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(config, null, 2) + "\n", "utf8");
+  fs.renameSync(temporary, file);
+}
+
+async function setAllOpenRouterFlex(enabled: boolean): Promise<number> {
+  const config = readModelsConfig();
+  config.providers ??= {};
+  config.providers.openrouter ??= {};
+  const overrides = config.providers.openrouter.modelOverrides ?? {};
+
+  if (enabled) {
+    const key = readApiKey();
+    if (!key) throw new Error("No OpenRouter API key found.");
+    const response = await fetch(MODELS_URL, {
+      headers: { Accept: "application/json", Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) throw new Error(`OpenRouter models request failed: HTTP ${response.status}`);
+    const body: any = await response.json();
+    const ids = (body?.data || [])
+      .map((model: any) => typeof model?.id === "string" ? model.id : "")
+      .filter((id: string) => id && !id.includes(":"));
+    if (!ids.length) throw new Error("OpenRouter returned no model IDs.");
+    for (const id of ids) {
+      const override = overrides[id] ?? {};
+      override.samplingParams = { ...(override.samplingParams ?? {}), service_tier: "flex" };
+      overrides[id] = override;
+    }
+  } else {
+    for (const override of Object.values(overrides) as any[]) {
+      if (!override?.samplingParams) continue;
+      delete override.samplingParams.service_tier;
+      if (!Object.keys(override.samplingParams).length) delete override.samplingParams;
+    }
+  }
+
+  config.providers.openrouter.modelOverrides = overrides;
+  writeModelsConfig(config);
+  return Object.values(overrides).filter((override: any) => override?.samplingParams?.service_tier === "flex").length;
+}
+
+function countFlexOverrides(): number {
+  const overrides = readModelsConfig().providers?.openrouter?.modelOverrides ?? {};
+  return Object.values(overrides).filter((override: any) => override?.samplingParams?.service_tier === "flex").length;
 }
 
 async function fetchBalance(): Promise<BalanceData> {
@@ -268,6 +335,30 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
     } else {
       toggleFooter(ctx);
     }
+  });
+
+  pi.registerCommand("openrouter-flex", {
+    description: "Enable or disable OpenRouter Flex routing for all catalog models",
+    handler: async (args, ctx) => {
+      const mode = String(args || "on").trim().toLowerCase();
+      try {
+        if (mode === "status") {
+          ctx.ui.notify(`OpenRouter Flex overrides: ${countFlexOverrides()} (models.json)`, "info");
+          return;
+        }
+        if (mode !== "on" && mode !== "off") {
+          ctx.ui.notify("Usage: /openrouter-flex [on|off|status]", "warning");
+          return;
+        }
+        const count = await setAllOpenRouterFlex(mode === "on");
+        ctx.ui.notify([
+          `OpenRouter Flex ${mode === "on" ? "enabled" : "disabled"} for ${count} model overrides.`,
+          "Run /model or restart Pi to reload the model configuration.",
+        ].join("\n"), "info");
+      } catch (error: any) {
+        ctx.ui.notify(`OpenRouter Flex: ${error?.message || String(error)}`, "error");
+      }
+    },
   });
 
   pi.registerCommand("openrouter", {
