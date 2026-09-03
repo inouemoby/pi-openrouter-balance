@@ -1,7 +1,6 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -486,28 +485,4 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
     },
   });
 
-  pi.registerTool({
-    name: "openrouter_balance",
-    label: "OpenRouter Balance",
-    description: "Get the current OpenRouter credit balance and total usage.",
-    parameters: Type.Object({}),
-    async execute() {
-      try {
-        const value = await getBalance(true);
-        const result = {
-          remaining: value.remaining,
-          totalCredits: value.totalCredits,
-          totalUsage: value.totalUsage,
-          refreshedAt: new Date(value._ts).toISOString(),
-        };
-        return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-          details: result,
-        };
-      } catch (error: any) {
-        const message = error?.message || String(error);
-        return { content: [{ type: "text", text: `Error: ${message}` }], details: undefined as any, isError: true };
-      }
-    },
-  });
 }
