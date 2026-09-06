@@ -81,10 +81,22 @@ function writeModelsConfig(config: Record<string, any>): void {
   fs.renameSync(temporary, file);
 }
 
+function isOpenRouterFlexEnabled(): boolean {
+  // Default on. `/openrouter-flex off` persists an explicit false value.
+  return readModelsConfig().providers?.openrouter?.flex !== false;
+}
+
+function isFlexEligibleModelId(modelId: string): boolean {
+  // OpenRouter model variants such as :free, :batch, :nitro, and :floor
+  // have their own routing semantics; do not add service_tier to variants.
+  return Boolean(modelId) && !modelId.includes(":");
+}
+
 async function setAllOpenRouterFlex(enabled: boolean): Promise<number> {
   const config = readModelsConfig();
   config.providers ??= {};
   config.providers.openrouter ??= {};
+  config.providers.openrouter.flex = enabled;
   const overrides = config.providers.openrouter.modelOverrides ?? {};
 
   if (enabled) {
@@ -378,9 +390,23 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async () => stopTimer());
   pi.on("before_provider_request", (event: any, ctx: any) => {
-    if (!recoveryPending || !isOpenRouter(ctx)) return;
-    recoveryPending = false;
-    return stripOpenRouterReasoningSignatures(event.payload);
+    let payload = event.payload;
+    if (isOpenRouter(ctx) && isOpenRouterFlexEnabled()) {
+      const modelId = String(ctx.model?.id || "");
+      if (isFlexEligibleModelId(modelId)
+        && payload && typeof payload === "object" && !Array.isArray(payload)) {
+        payload = {
+          ...(payload as Record<string, unknown>),
+          service_tier: "flex",
+        };
+      }
+    }
+
+    if (recoveryPending && isOpenRouter(ctx)) {
+      recoveryPending = false;
+      return stripOpenRouterReasoningSignatures(payload);
+    }
+    return payload === event.payload ? undefined : payload;
   });
 
   pi.on("input", (event: any) => {
@@ -437,7 +463,7 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
       let mode = String(args || "").trim().toLowerCase();
       try {
         if (!mode) {
-          const enabled = countFlexOverrides() > 0;
+          const enabled = isOpenRouterFlexEnabled();
           const choice = await ctx.ui.select(
             `OpenRouter Flex (${enabled ? "enabled" : "disabled"})`,
             ["Enable Flex", "Disable Flex", "Cancel"],
@@ -447,7 +473,7 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
           else return;
         }
         if (mode === "status") {
-          ctx.ui.notify(`OpenRouter Flex overrides: ${countFlexOverrides()} (models.json)`, "info");
+          ctx.ui.notify(`OpenRouter Flex: ${isOpenRouterFlexEnabled() ? "enabled" : "disabled"}; stored overrides: ${countFlexOverrides()}`, "info");
           return;
         }
         if (mode === "enable") mode = "on";
