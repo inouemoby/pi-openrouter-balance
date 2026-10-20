@@ -33,7 +33,7 @@ The extension reads the key from Pi's standard `auth.json` provider entry or the
 - Flex routing is enabled by default for OpenRouter models without a colon variant, using top-level `service_tier: "flex"`; OpenRouter automatically serves standard capacity when a model has no Flex endpoint;
 - `/openrouter-flex` opens an enable/disable submenu; `/openrouter-flex on|off|status` executes directly without opening the submenu;
 - colon variants such as `:free`, `:batch`, `:nitro`, and `:floor` are left unchanged;
-- automatic refresh after each agent turn and every five minutes while idle;
+- automatic refresh after each assistant message (including tool-call turns, limited to one attempt per 60-second cache window) and every thirty minutes while idle;
 - standard root `index.ts` extension entry, with no build directory required.
 
 ## Footer preview

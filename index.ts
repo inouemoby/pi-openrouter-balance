@@ -9,7 +9,7 @@ const CREDITS_URL = "https://openrouter.ai/api/v1/credits";
 const MODELS_URL = "https://openrouter.ai/api/v1/models";
 const MODELS_CONFIG_PATH = "models.json";
 const CACHE_MS = 60_000;
-const IDLE_REFRESH_MS = 5 * 60 * 1000;
+const IDLE_REFRESH_MS = 30 * 60 * 1000;
 
 interface BalanceData {
   totalCredits: number;
@@ -471,6 +471,19 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
       }, 0);
     }
   });
+  // 每条 assistant 消息结束 (含工具调用轮次) 都尝试刷新一次, 让单轮很长的任务
+  // 中途也能及时看到用量变化; 同一个 CACHE_MS 窗口内最多发起一次 (含失败重试), 避免过快
+  let lastMidRefreshAt = 0;
+  pi.on("message_end", async (event: any, ctx: any) => {
+    latestCtx = ctx;
+    if (event?.message?.role !== "assistant") return;
+    if (!isOpenRouter(ctx) || !readApiKey()) return;
+    const now = Date.now();
+    if (now - lastMidRefreshAt < CACHE_MS) return;
+    lastMidRefreshAt = now;
+    void refresh(ctx);
+  });
+
   pi.on("model_select", async (_event, ctx) => {
     latestCtx = ctx;
     if (isOpenRouter(ctx)) {
