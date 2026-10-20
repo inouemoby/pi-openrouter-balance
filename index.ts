@@ -224,6 +224,7 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
   let balance: BalanceData | null = null;
   let request: Promise<BalanceData> | null = null;
   let footerOn = false;
+  let footerGeneration = 0;
   let tui: any = null;
   let latestCtx: any = null;
   let busy = false;
@@ -236,8 +237,12 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
     return ctx?.model?.provider === PROVIDER;
   }
 
+  function requestRenderSafe(target: any): void {
+    try { target?.requestRender?.(); } catch { /* footer may already be disposed */ }
+  }
+
   function trigger(): void {
-    if (tui) setTimeout(() => tui.requestRender?.(), 0);
+    setTimeout(() => requestRenderSafe(tui), 0);
   }
 
   async function getBalance(force = false): Promise<BalanceData> {
@@ -268,9 +273,9 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
     }
   }
 
-  function toggleFooter(ctx: any): void {
+  function toggleFooter(ctx: any, force = false): void {
     if (isOpenRouter(ctx) && readApiKey()) {
-      if (!footerOn) {
+      if (!footerOn || force) {
         ctx.ui.setFooter(buildFooter(ctx));
         footerOn = true;
       }
@@ -282,14 +287,21 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
   }
 
   function buildFooter(ctx: any) {
+    const generation = ++footerGeneration;
     return (nextTui: any, theme: any, fd: any) => {
       tui = nextTui;
-      const unsubscribe = fd.onBranchChange(() => nextTui.requestRender());
+      const unsubscribe = fd.onBranchChange(() => {
+        if (generation === footerGeneration) requestRenderSafe(nextTui);
+      });
       return {
+        // footer 可能被 pi 或其他扩展从外部 dispose(我们不知情),
+        // 必须同步 footerOn,并避免旧 footer 清理新 footer 的状态
         dispose: () => {
-          unsubscribe();
-          tui = null;
-          footerOn = false;
+          try { unsubscribe(); } catch { /* already disposed */ }
+          if (generation === footerGeneration) {
+            tui = null;
+            footerOn = false;
+          }
         },
         invalidate() {},
         render(width: number): string[] {
@@ -316,12 +328,14 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
           }
 
           const parts: string[] = [];
-          const removable: number[] = [];
-          if (input) parts.push(`↑${formatTokens(input)}`);
-          if (output) parts.push(`↓${formatTokens(output)}`);
-          if (cacheRead) { removable.push(parts.length); parts.push(`R${formatTokens(cacheRead)}`); }
-          if (cacheWrite) { removable.push(parts.length); parts.push(`W${formatTokens(cacheWrite)}`); }
-          if (cost) parts.push(money(cost));
+          const cachePartIndexes: number[] = [];
+          const tokenPartIndexes: number[] = [];
+          let costPartIndex = -1;
+          if (input) { tokenPartIndexes.push(parts.length); parts.push(`↑${formatTokens(input)}`); }
+          if (output) { tokenPartIndexes.push(parts.length); parts.push(`↓${formatTokens(output)}`); }
+          if (cacheRead) { cachePartIndexes.push(parts.length); parts.push(`R${formatTokens(cacheRead)}`); }
+          if (cacheWrite) { cachePartIndexes.push(parts.length); parts.push(`W${formatTokens(cacheWrite)}`); }
+          if (cost) { costPartIndex = parts.length; parts.push(money(cost)); }
 
           const contextUsage = ctx.getContextUsage?.();
           const contextWindow = contextUsage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
@@ -335,7 +349,6 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
             const balanceText = `OR:${money(balance.remaining)}`;
             const index = parts.length;
             parts.push(balanceText);
-            const left = parts.join(" ");
             if (balance.remaining <= 0) parts[index] = theme.fg("error", balanceText);
             else if (balance.remaining < 1) parts[index] = theme.fg("warning", balanceText);
           }
@@ -351,8 +364,17 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
           if (visibleWidth(left) + 2 + visibleWidth(providerRight) <= width) right = providerRight;
 
           const fits = () => visibleWidth(left) + 2 + visibleWidth(right) <= width;
+          // 省略顺序 (与 pi-codex-usage 一致): 供应商名 → 缓存计数 → 费用 → 累计 token
           if (!fits()) {
-            for (const index of removable) parts[index] = "";
+            for (const index of cachePartIndexes) parts[index] = "";
+            left = parts.filter(Boolean).join(" ");
+          }
+          if (!fits() && costPartIndex >= 0) {
+            parts[costPartIndex] = "";
+            left = parts.filter(Boolean).join(" ");
+          }
+          if (!fits() && tokenPartIndexes.length > 0) {
+            for (const index of tokenPartIndexes) parts[index] = "";
             left = parts.filter(Boolean).join(" ");
           }
 
@@ -383,12 +405,16 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     latestCtx = ctx;
-    toggleFooter(ctx);
+    footerOn = false;                            // 强制重建 footer,确保闭包捕获新 ctx
+    toggleFooter(ctx, true);
     if (readApiKey()) void refresh(ctx);
     startTimer();
   });
 
-  pi.on("session_shutdown", async () => stopTimer());
+  pi.on("session_shutdown", async () => {
+    stopTimer();
+    latestCtx = null;
+  });
   pi.on("before_provider_request", (event: any, ctx: any) => {
     let payload = event.payload;
     if (isOpenRouter(ctx) && isOpenRouterFlexEnabled()) {
@@ -448,14 +474,22 @@ export default function piOpenRouterBalance(pi: ExtensionAPI): void {
   pi.on("model_select", async (_event, ctx) => {
     latestCtx = ctx;
     if (isOpenRouter(ctx)) {
+      // 延迟到 macrotask: 让排在我们后面的扩展先完成卸载,我们再挂载,避免被覆盖
       setTimeout(() => {
-        toggleFooter(ctx);
-        void refresh(ctx);
+        const currentCtx = latestCtx;
+        if (!currentCtx || !isOpenRouter(currentCtx)) return;
+        try {
+          toggleFooter(currentCtx, true);
+          void refresh(currentCtx);
+        } catch { /* session or footer was disposed */ }
       }, 0);
     } else {
+      // 切走时立即卸载自己,给目标 provider 的扩展让位
       toggleFooter(ctx);
+      void refresh(ctx);
     }
   });
+  pi.on("thinking_level_select", async () => { trigger(); });
 
   pi.registerCommand("openrouter-flex", {
     description: "Enable or disable OpenRouter Flex routing for all catalog models",
